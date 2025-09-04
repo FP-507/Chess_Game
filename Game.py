@@ -8,7 +8,9 @@ import chess.pgn
 import math
 import time
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Set, Any
+from typing import Dict, List, Tuple, Optional, Deque
+from collections import deque
+import threading
 
 # --- Configuración ---
 Q_FILE = "ia_qtable.json"
@@ -36,9 +38,9 @@ DIFFICULTIES = ["easy", "normal", "hard"]
 
 # Configuración de dificultad
 DIFFICULTY_CONFIG = {
-    "easy": {"epsilon": 0.2, "search_depth": 1},
-    "normal": {"epsilon": 0.01, "search_depth": 1},
-    "hard": {"epsilon": 0.0, "search_depth": 2}
+    "easy": {"epsilon": 0.2, "search_depth": 1, "time_limit": 1.0},
+    "normal": {"epsilon": 0.01, "search_depth": 2, "time_limit": 2.0},
+    "hard": {"epsilon": 0.0, "search_depth": 3, "time_limit": 5.0}
 }
 
 # Valores de piezas para evaluación
@@ -50,6 +52,84 @@ PIECE_VALUES = {
     chess.QUEEN: 9,
     chess.KING: 0
 }
+
+# Tablas de piezas posicionales (Piece-Square Tables)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5, -10, 0,  0, -10, -5,  5,
+    5, 10, 10, -20, -20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50, -40, -30, -30, -30, -30, -40, -50,
+    -40, -20,  0,  0,  0,  0, -20, -40,
+    -30,  0, 10, 15, 15, 10,  0, -30,
+    -30,  5, 15, 20, 20, 15,  5, -30,
+    -30,  0, 15, 20, 20, 15,  0, -30,
+    -30,  5, 10, 15, 15, 10,  5, -30,
+    -40, -20,  0,  5,  5,  0, -20, -40,
+    -50, -40, -30, -30, -30, -30, -40, -50
+]
+
+BISHOP_TABLE = [
+    -20, -10, -10, -10, -10, -10, -10, -20,
+    -10,  0,  0,  0,  0,  0,  0, -10,
+    -10,  0, 10, 10, 10, 10,  0, -10,
+    -10,  5,  5, 10, 10,  5,  5, -10,
+    -10,  0,  5, 10, 10,  5,  0, -10,
+    -10,  5,  5,  5,  5,  5,  5, -10,
+    -10,  0,  5,  0,  0,  5,  0, -10,
+    -20, -10, -10, -10, -10, -10, -10, -20
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20, -10, -10, -5, -5, -10, -10, -20,
+    -10,  0,  0,  0,  0,  0,  0, -10,
+    -10,  0,  5,  5,  5,  5,  0, -10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0, -10,
+    -10,  0,  5,  0,  0,  0,  0, -10,
+    -20, -10, -10, -5, -5, -10, -10, -20
+]
+
+KING_MIDDLEGAME_TABLE = [
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -20, -30, -30, -40, -40, -30, -30, -20,
+    -10, -20, -20, -20, -20, -20, -20, -10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+KING_ENDGAME_TABLE = [
+    -50, -40, -30, -20, -20, -30, -40, -50,
+    -30, -20, -10,  0,  0, -10, -20, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -30,  0,  0,  0,  0, -30, -30,
+    -50, -30, -30, -30, -30, -30, -30, -50
+]
 
 # Casillas centrales para evaluación
 CENTER_SQUARES = {chess.D4, chess.D5, chess.E4, chess.E5}
@@ -81,7 +161,6 @@ class SoundGenerator:
     @staticmethod
     def generate_capture_sound():
         """Generar sonido de captura de pieza"""
-        # Dos tonos rápidos
         samples1 = SoundGenerator.generate_sine_wave(400, 0.05, 0.4)
         samples2 = SoundGenerator.generate_sine_wave(300, 0.05, 0.4)
         return np.concatenate((samples1, samples2))
@@ -89,7 +168,6 @@ class SoundGenerator:
     @staticmethod
     def generate_check_sound():
         """Generar sonido de jaque"""
-        # Tonos ascendentes
         samples1 = SoundGenerator.generate_sine_wave(400, 0.05, 0.4)
         samples2 = SoundGenerator.generate_sine_wave(500, 0.05, 0.4)
         samples3 = SoundGenerator.generate_sine_wave(600, 0.05, 0.4)
@@ -98,7 +176,6 @@ class SoundGenerator:
     @staticmethod
     def generate_checkmate_sound():
         """Generar sonido de jaque mate"""
-        # Tres tonos descendentes
         samples1 = SoundGenerator.generate_sine_wave(600, 0.1, 0.5)
         samples2 = SoundGenerator.generate_sine_wave(500, 0.1, 0.5)
         samples3 = SoundGenerator.generate_sine_wave(400, 0.1, 0.5)
@@ -107,7 +184,6 @@ class SoundGenerator:
     @staticmethod
     def generate_promote_sound():
         """Generar sonido de promoción"""
-        # Tres tonos ascendentes
         samples1 = SoundGenerator.generate_sine_wave(400, 0.05, 0.4)
         samples2 = SoundGenerator.generate_sine_wave(500, 0.05, 0.4)
         samples3 = SoundGenerator.generate_sine_wave(600, 0.05, 0.4)
@@ -117,7 +193,6 @@ class SoundGenerator:
     @staticmethod
     def generate_castle_sound():
         """Generar sonido de enroque"""
-        # Dos tonos simultáneos
         duration = 0.2
         sample_rate = 44100
         samples = np.zeros(int(duration * sample_rate))
@@ -131,10 +206,30 @@ class SoundGenerator:
         """Generar sonido de clic"""
         return SoundGenerator.generate_square_wave(200, 0.05, 0.3)
 
+class ReplayBuffer:
+    """Buffer de experiencia para aprendizaje por refuerzo"""
+    def __init__(self, capacity=10000):
+        self.buffer = deque(maxlen=capacity)
+        self.lock = threading.Lock()
+    
+    def add(self, state, action, reward, next_state, done):
+        with self.lock:
+            self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size):
+        with self.lock:
+            if len(self.buffer) < batch_size:
+                return random.sample(self.buffer, len(self.buffer))
+            return random.sample(self.buffer, batch_size)
+    
+    def size(self):
+        with self.lock:
+            return len(self.buffer)
+
 class ChessGame:
     def __init__(self):
         pygame.init()
-        pygame.mixer.init()  # Inicializar mixer para sonidos
+        pygame.mixer.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption('Chess Game Premium')
         self.clock = pygame.time.Clock()
@@ -146,23 +241,28 @@ class ChessGame:
         self.difficulty = "hard"
         self.epsilon = DIFFICULTY_CONFIG[self.difficulty]["epsilon"]
         self.search_depth = DIFFICULTY_CONFIG[self.difficulty]["search_depth"]
+        self.time_limit = DIFFICULTY_CONFIG[self.difficulty]["time_limit"]
         self.animation_queue = []
         self.current_animation = None
         self.animation_time = 0
-        self.game_state = "menu"  # menu, playing, game_over
+        self.game_state = "menu"
+        self.replay_buffer = ReplayBuffer(5000)
+        self.killer_moves = {}
+        self.history_table = {}
         
-        # Precompute attacked squares for both colors
         self._attacked_by_white = set()
         self._attacked_by_black = set()
         
         self.load_images()
-        self.generate_sounds()  # Generar sonidos programáticamente
+        self.generate_sounds()
+        
+        self.training_thread = None
+        self.stop_training = False
         
     def generate_sounds(self):
         """Generar todos los sonidos del juego"""
         sound_generator = SoundGenerator()
         
-        # Generar sonidos
         move_sound = pygame.mixer.Sound(buffer=sound_generator.generate_move_sound())
         capture_sound = pygame.mixer.Sound(buffer=sound_generator.generate_capture_sound())
         check_sound = pygame.mixer.Sound(buffer=sound_generator.generate_check_sound())
@@ -171,7 +271,6 @@ class ChessGame:
         castle_sound = pygame.mixer.Sound(buffer=sound_generator.generate_castle_sound())
         click_sound = pygame.mixer.Sound(buffer=sound_generator.generate_click_sound())
         
-        # Almacenar sonidos
         self.sounds = {
             "move": move_sound,
             "capture": capture_sound,
@@ -214,7 +313,6 @@ class ChessGame:
                     self.images[piece] = pygame.transform.smoothscale(img, (SQ_SIZE, SQ_SIZE))
                 else:
                     print(f"Advertencia: Falta la imagen {path}")
-                    # Crear una imagen de placeholder
                     surf = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
                     color = (255, 255, 255) if piece.startswith('w') else (0, 0, 0)
                     pygame.draw.circle(surf, color, (SQ_SIZE//2, SQ_SIZE//2), SQ_SIZE//3)
@@ -225,7 +323,6 @@ class ChessGame:
                     self.images[piece] = surf
             except Exception as e:
                 print(f"Error cargando imagen {path}: {e}")
-                # Crear una imagen de fallback
                 surf = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
                 color = (255, 0, 0) if piece.startswith('w') else (0, 0, 255)
                 pygame.draw.rect(surf, color, (0, 0, SQ_SIZE, SQ_SIZE))
@@ -236,10 +333,334 @@ class ChessGame:
             self.difficulty = difficulty
             self.epsilon = DIFFICULTY_CONFIG[difficulty]["epsilon"]
             self.search_depth = DIFFICULTY_CONFIG[difficulty]["search_depth"]
+            self.time_limit = DIFFICULTY_CONFIG[difficulty]["time_limit"]
             self.play_sound("click")
     
+    def is_endgame(self, board):
+        """Determinar si estamos en un final de juego"""
+        queens = len(board.pieces(chess.QUEEN, chess.WHITE)) + len(board.pieces(chess.QUEEN, chess.BLACK))
+        rooks = len(board.pieces(chess.ROOK, chess.WHITE)) + len(board.pieces(chess.ROOK, chess.BLACK))
+        bishops = len(board.pieces(chess.BISHOP, chess.WHITE)) + len(board.pieces(chess.BISHOP, chess.BLACK))
+        knights = len(board.pieces(chess.KNIGHT, chess.WHITE)) + len(board.pieces(chess.KNIGHT, chess.BLACK))
+        
+        total_pieces = sum(len(board.pieces(pt, color)) for pt in PIECE_VALUES for color in [chess.WHITE, chess.BLACK])
+        
+        return (queens == 0 or 
+                (queens <= 2 and rooks + bishops + knights <= 4) or
+                total_pieces <= 10)
+    
+    def get_piece_square_value(self, piece, square, endgame):
+        """Obtener el valor posicional de una pieza en una casilla"""
+        if piece.piece_type == chess.PAWN:
+            table = PAWN_TABLE
+        elif piece.piece_type == chess.KNIGHT:
+            table = KNIGHT_TABLE
+        elif piece.piece_type == chess.BISHOP:
+            table = BISHOP_TABLE
+        elif piece.piece_type == chess.ROOK:
+            table = ROOK_TABLE
+        elif piece.piece_type == chess.QUEEN:
+            table = QUEEN_TABLE
+        elif piece.piece_type == chess.KING:
+            table = KING_ENDGAME_TABLE if endgame else KING_MIDDLEGAME_TABLE
+        else:
+            return 0
+        
+        if piece.color == chess.WHITE:
+            return table[square]
+        else:
+            return table[chess.square_mirror(square)]
+    
+    def order_moves(self, board, moves, tt_move=None):
+        """Ordenar movimientos para mejorar la poda alfa-beta"""
+        scored_moves = []
+        
+        for move in moves:
+            score = 0
+            
+            if tt_move and move == tt_move:
+                score += 10000
+            
+            if board.is_capture(move):
+                captured_piece = board.piece_at(move.to_square)
+                if captured_piece:
+                    score += 10 * PIECE_VALUES[captured_piece.piece_type]
+                    attacker = board.piece_at(move.from_square)
+                    if attacker:
+                        score += PIECE_VALUES[captured_piece.piece_type] * 10 - PIECE_VALUES[attacker.piece_type]
+            
+            if move.promotion:
+                score += PIECE_VALUES[move.promotion] * 9
+            
+            if board.gives_check(move):
+                score += 50
+            
+            if move in self.killer_moves.get(board.fen(), []):
+                score += 900
+            
+            score += self.history_table.get((move.from_square, move.to_square), 0)
+            
+            scored_moves.append((score, move))
+        
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        return [move for _, move in scored_moves]
+    
+    def update_history(self, move, depth):
+        """Actualizar la tabla de historia"""
+        key = (move.from_square, move.to_square)
+        self.history_table[key] = self.history_table.get(key, 0) + depth * depth
+    
+    def update_killer(self, move, board_fen):
+        """Actualizar los killer moves"""
+        if board_fen not in self.killer_moves:
+            self.killer_moves[board_fen] = []
+        
+        if move not in self.killer_moves[board_fen]:
+            self.killer_moves[board_fen].insert(0, move)
+            if len(self.killer_moves[board_fen]) > 2:
+                self.killer_moves[board_fen].pop()
+    
+    def quiescence_search(self, board, alpha, beta, color):
+        """Búsqueda de quietud para evitar el horizonte effect"""
+        stand_pat = self.evaluate_board(board, color)
+        
+        if stand_pat >= beta:
+            return beta
+        if alpha < stand_pat:
+            alpha = stand_pat
+        
+        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        captures = self.order_moves(board, captures)
+        
+        for move in captures:
+            board.push(move)
+            score = -self.quiescence_search(board, -beta, -alpha, -color)
+            board.pop()
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+        
+        return alpha
+    
+    def evaluate_board(self, board, color=chess.WHITE):
+        """Evaluar la posición del tablero con tablas posicionales"""
+        endgame = self.is_endgame(board)
+        eval = 0
+        
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                material = PIECE_VALUES[piece.piece_type]
+                positional = self.get_piece_square_value(piece, square, endgame) / 100.0
+                
+                if piece.color == chess.WHITE:
+                    eval += material + positional
+                else:
+                    eval -= material + positional
+        
+        mobility = len(list(board.legal_moves)) * 0.1
+        if board.turn == chess.WHITE:
+            eval += mobility
+        else:
+            eval -= mobility
+        
+        center_control = 0
+        for square in CENTER_SQUARES:
+            if board.is_attacked_by(chess.WHITE, square):
+                center_control += 0.1
+            if board.is_attacked_by(chess.BLACK, square):
+                center_control -= 0.1
+        eval += center_control
+        
+        pawn_structure = self.evaluate_pawn_structure(board)
+        eval += pawn_structure
+        
+        if color == chess.BLACK:
+            eval = -eval
+        
+        return eval
+    
+    def evaluate_pawn_structure(self, board):
+        """Evaluar la estructura de peones"""
+        score = 0
+        
+        for color in [chess.WHITE, chess.BLACK]:
+            pawns = board.pieces(chess.PAWN, color)
+            pawn_files = [chess.square_file(sq) for sq in pawns]
+            
+            for file in set(pawn_files):
+                count = pawn_files.count(file)
+                if count > 1:
+                    if color == chess.WHITE:
+                        score -= 0.2 * (count - 1)
+                    else:
+                        score += 0.2 * (count - 1)
+            
+            for sq in pawns:
+                file = chess.square_file(sq)
+                isolated = True
+                for adj_file in [file - 1, file + 1]:
+                    if 0 <= adj_file < 8 and any(f == adj_file for f in pawn_files):
+                        isolated = False
+                        break
+                
+                if isolated:
+                    if color == chess.WHITE:
+                        score -= 0.3
+                    else:
+                        score += 0.3
+            
+            for sq in pawns:
+                file = chess.square_file(sq)
+                rank = chess.square_rank(sq)
+                passed = True
+                
+                for opp_sq in board.pieces(chess.PAWN, not color):
+                    opp_file = chess.square_file(opp_sq)
+                    opp_rank = chess.square_rank(opp_sq)
+                    
+                    if abs(opp_file - file) <= 1 and (
+                        (color == chess.WHITE and opp_rank > rank) or
+                        (color == chess.BLACK and opp_rank < rank)
+                    ):
+                        passed = False
+                        break
+                
+                if passed:
+                    advance_bonus = 0.1 * (rank if color == chess.WHITE else 7 - rank)
+                    if color == chess.WHITE:
+                        score += 0.5 + advance_bonus
+                    else:
+                        score -= 0.5 + advance_bonus
+        
+        return score
+    
+    def iterative_deepening(self, board, color, max_depth, time_limit):
+        """Búsqueda con iterative deepening y límite de tiempo"""
+        best_move = None
+        start_time = time.time()
+        
+        for depth in range(1, max_depth + 1):
+            if time.time() - start_time > time_limit:
+                break
+                
+            score, move = self.minimax(
+                board, depth, -float('inf'), float('inf'), 
+                color == chess.WHITE, color, depth, start_time, time_limit
+            )
+            
+            if move is not None:
+                best_move = move
+                
+            if abs(score) > 10000:
+                break
+        
+        return best_move
+    
+    def minimax(self, board, depth, alpha, beta, maximizing, color, depth_initial, start_time, time_limit):
+        """Algoritmo minimax con poda alfa-beta y límite de tiempo"""
+        if time.time() - start_time > time_limit:
+            return 0, None
+        
+        key = board.fen()
+        if key in self.transposition_table:
+            entry_depth, entry_eval, entry_move, entry_flag = self.transposition_table[key]
+            if entry_depth >= depth:
+                if entry_flag == "exact":
+                    return entry_eval, entry_move
+                elif entry_flag == "lowerbound":
+                    alpha = max(alpha, entry_eval)
+                elif entry_flag == "upperbound":
+                    beta = min(beta, entry_eval)
+                
+                if alpha >= beta:
+                    return entry_eval, entry_move
+        
+        if depth == 0 or board.is_game_over():
+            eval = self.quiescence_search(board, alpha, beta, 1 if maximizing else -1)
+            return eval, None
+        
+        legal_moves = list(board.legal_moves)
+        
+        tt_move = self.transposition_table.get(key, (0, 0, None, ""))[2] if key in self.transposition_table else None
+        legal_moves = self.order_moves(board, legal_moves, tt_move)
+        
+        best_move = None
+        best_score = -float('inf') if maximizing else float('inf')
+        
+        for move in legal_moves:
+            if time.time() - start_time > time_limit:
+                break
+                
+            board.push(move)
+            score, _ = self.minimax(
+                board, depth - 1, alpha, beta, not maximizing, color, 
+                depth_initial, start_time, time_limit
+            )
+            board.pop()
+            
+            if maximizing:
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                alpha = max(alpha, best_score)
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+                beta = min(beta, best_score)
+            
+            if beta <= alpha:
+                self.update_killer(move, key)
+                self.update_history(move, depth)
+                break
+        
+        flag = "exact"
+        if best_score <= alpha:
+            flag = "upperbound"
+        elif best_score >= beta:
+            flag = "lowerbound"
+            
+        self.transposition_table[key] = (depth, best_score, best_move, flag)
+        
+        return best_score, best_move
+    
+    def q_choose_move(self, board, color):
+        """Elegir un movimiento usando Q-learning y minimax"""
+        fen = board.fen()
+        legal_moves = list(board.legal_moves)
+        
+        if self.search_depth > 0:
+            move = self.iterative_deepening(board, color, self.search_depth + 2, self.time_limit)
+            if move:
+                return move
+        
+        if random.random() < self.epsilon:
+            return random.choice(legal_moves)
+        
+        move_scores = []
+        for move in legal_moves:
+            q_value = self.qtable.get(fen + str(move), None)
+            if q_value is not None:
+                score = q_value
+            else:
+                board.push(move)
+                score = self.evaluate_board(board, color)
+                board.pop()
+            move_scores.append((move, score))
+        
+        if color == chess.WHITE:
+            best_score = max(score for _, score in move_scores)
+            best_moves = [move for move, score in move_scores if score == best_score]
+        else:
+            best_score = min(score for _, score in move_scores)
+            best_moves = [move for move, score in move_scores if score == best_score]
+        
+        return random.choice(best_moves) if best_moves else random.choice(legal_moves)
+    
     def draw_board(self, screen):
-        # Dibujar el tablero de ajedrez
         for r in range(DIMENSION):
             for c in range(DIMENSION):
                 color = LIGHT_SQUARE if (r + c) % 2 == 0 else DARK_SQUARE
@@ -256,7 +677,6 @@ class ChessGame:
             s.fill(LAST_MOVE_COLOR)
             screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
             
-        # Resaltar jaque
         if board.is_check():
             king_sq = board.king(board.turn)
             if king_sq is not None:
@@ -269,14 +689,12 @@ class ChessGame:
     def draw_highlights(self, screen, board, selected_square, valid_moves):
         """Resaltar casillas seleccionadas y movimientos válidos"""
         if selected_square is not None:
-            # Resaltar casilla seleccionada
             row = 7 - chess.square_rank(selected_square)
             col = chess.square_file(selected_square)
             s = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
             s.fill(HIGHLIGHT_COLOR)
             screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
             
-            # Resaltar movimientos válidos
             for move in valid_moves:
                 if move.from_square == selected_square:
                     to_sq = move.to_square
@@ -284,11 +702,10 @@ class ChessGame:
                     col = chess.square_file(to_sq)
                     s = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
                     
-                    # Diferente color para capturas
                     if board.piece_at(to_sq):
-                        s.fill((255, 0, 0, 100))  # Rojo para capturas
+                        s.fill((255, 0, 0, 100))
                     else:
-                        s.fill((0, 255, 0, 100))  # Verde para movimientos
+                        s.fill((0, 255, 0, 100))
                     
                     screen.blit(s, (col * SQ_SIZE, row * SQ_SIZE))
     
@@ -306,16 +723,13 @@ class ChessGame:
                     screen.blit(self.images[piece_str], (col * SQ_SIZE, row * SQ_SIZE))
     
     def draw_sidebar(self, screen, board, move_log, mouse_pos, reset_hover, ia_color, player_color):
-        # Dibujar fondo de la barra lateral
         pygame.draw.rect(screen, SIDEBAR_COLOR, (BOARD_SIZE, 0, SIDEBAR_WIDTH, HEIGHT))
         
-        # Título
         font_title = pygame.font.SysFont('Arial', 30, bold=True)
         title_text = font_title.render("♟ AJEDREZ PREMIUM", True, ACCENT_COLOR)
         screen.blit(title_text, (BOARD_SIZE + 30, 20))
         pygame.draw.line(screen, ACCENT_COLOR, (BOARD_SIZE + 20, 60), (WIDTH - 30, 60), 3)
         
-        # Información del juego
         font = pygame.font.SysFont('Arial', 22, bold=True)
         turn = 'Blancas' if board.turn == chess.WHITE else 'Negras'
         turn_text = font.render(f'Turno: {turn}', True, TEXT_COLOR)
@@ -333,7 +747,6 @@ class ChessGame:
         screen.blit(font_role.render(f'IA: {ia_str}', True, ACCENT_COLOR), (BOARD_SIZE + 30, 130))
         screen.blit(font_role.render(f'Jugador: {player_str}', True, (180, 255, 180)), (BOARD_SIZE + 140, 130))
         
-        # Botón de rendición
         button_rect = pygame.Rect(BOARD_SIZE + 30, 160, 200, 40)
         color = BUTTON_HOVER if reset_hover else BUTTON_COLOR
         pygame.draw.rect(screen, color, button_rect, border_radius=10)
@@ -341,10 +754,9 @@ class ChessGame:
         btn_text = font_btn.render('Rendirse', True, BUTTON_TEXT)
         screen.blit(btn_text, (button_rect.x + 60, button_rect.y + 8))
         
-        # Selector de dificultad
         font_diff = pygame.font.SysFont('Arial', 16)
         screen.blit(font_diff.render("Dificultad:", True, TEXT_COLOR), (BOARD_SIZE + 30, 210))
-        
+
         diff_buttons = []
         for i, diff in enumerate(DIFFICULTIES):
             diff_rect = pygame.Rect(BOARD_SIZE + 30 + i*120, 235, 110, 30)
@@ -355,7 +767,6 @@ class ChessGame:
             screen.blit(diff_text, (diff_rect.x + 10, diff_rect.y + 5))
             diff_buttons.append((diff_rect, diff))
         
-        # Historial de movimientos
         font2 = pygame.font.SysFont('Consolas', 17)
         pygame.draw.rect(screen, HIST_BG, (BOARD_SIZE + 30, 275, SIDEBAR_WIDTH - 60, HEIGHT - 295), border_radius=10)
         hist_title = font2.render('Historial:', True, ACCENT_COLOR)
@@ -365,7 +776,6 @@ class ChessGame:
             move_text = font2.render(move, True, TEXT_COLOR)
             screen.blit(move_text, (BOARD_SIZE + 45, 315 + i * 22))
         
-        # Estadísticas
         font_stats = pygame.font.SysFont('Arial', 16)
         total = self.stats['games']
         ia_wins = self.stats['ia_wins']
@@ -391,7 +801,6 @@ class ChessGame:
         buttons = []
         x, y = pos
         
-        # Fondo semitransparente
         s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         s.fill((0, 0, 0, 150))
         screen.blit(s, (0, 0))
@@ -410,287 +819,6 @@ class ChessGame:
         
         return buttons
     
-    def update_attacked_squares(self, board):
-        """Precompute attacked squares for both colors"""
-        self._attacked_by_white.clear()
-        self._attacked_by_black.clear()
-        
-        for square in chess.SQUARES:
-            if board.is_attacked_by(chess.WHITE, square):
-                self._attacked_by_white.add(square)
-            if board.is_attacked_by(chess.BLACK, square):
-                self._attacked_by_black.add(square)
-    
-    def evaluate_board(self, board):
-        """Evaluate the board position with optimized calculations"""
-        # Material balance
-        eval = 0
-        for piece_type, value in PIECE_VALUES.items():
-            eval += len(board.pieces(piece_type, chess.WHITE)) * value
-            eval -= len(board.pieces(piece_type, chess.BLACK)) * value
-        
-        # Update attacked squares
-        self.update_attacked_squares(board)
-        
-        # Piece-specific evaluations
-        for color in [chess.WHITE, chess.BLACK]:
-            sign = 1 if color == chess.WHITE else -1
-            
-            # Queen presence
-            if len(board.pieces(chess.QUEEN, color)) < 1:
-                eval -= sign * 4
-            
-            # Rook count
-            if len(board.pieces(chess.ROOK, color)) < 2:
-                eval -= sign * 2
-            
-            # Bishop pair bonus
-            if len(board.pieces(chess.BISHOP, color)) >= 2:
-                eval += sign * 0.5
-            
-            # Piece mobility and safety
-            for piece_type in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]:
-                for sq in board.pieces(piece_type, color):
-                    # Check if piece is undefended
-                    defenders = self._attacked_by_white if color == chess.WHITE else self._attacked_by_black
-                    if sq not in defenders:
-                        eval -= sign * 0.7
-            
-            # Center control
-            for sq in CENTER_SQUARES:
-                piece = board.piece_at(sq)
-                if piece and piece.color == color:
-                    eval += sign * 0.4
-            
-            # Pawn structure evaluation
-            pawns = board.pieces(chess.PAWN, color)
-            files = [chess.square_file(sq) for sq in pawns]
-            
-            # Doubled pawns penalty
-            for f in set(files):
-                count = files.count(f)
-                if count > 1:
-                    eval -= sign * 0.25 * (count - 1)
-            
-            # Isolated pawns penalty
-            for sq in pawns:
-                file = chess.square_file(sq)
-                neighbors = [file - 1, file + 1]
-                isolated = True
-                
-                for n in neighbors:
-                    if 0 <= n < 8 and any(chess.square_file(p) == n for p in pawns):
-                        isolated = False
-                        break
-                
-                if isolated:
-                    eval -= sign * 0.3
-            
-            # Passed pawns bonus
-            for sq in pawns:
-                rank = chess.square_rank(sq)
-                file = chess.square_file(sq)
-                passed = True
-                
-                direction = 1 if color == chess.WHITE else -1
-                for r in range(rank + direction, 8 if color == chess.WHITE else -1, direction):
-                    for f in [file - 1, file, file + 1]:
-                        if 0 <= f < 8:
-                            opp_sq = chess.square(f, r)
-                            opp_pawn = board.piece_at(opp_sq)
-                            if opp_pawn and opp_pawn.piece_type == chess.PAWN and opp_pawn.color != color:
-                                passed = False
-                                break
-                    if not passed:
-                        break
-                
-                if passed:
-                    eval += sign * 0.4
-            
-            # King safety
-            king_sq = board.king(color)
-            if king_sq is not None:
-                rank = chess.square_rank(king_sq)
-                file = chess.square_file(king_sq)
-                protection = 0
-                
-                for dr in [-1, 0, 1]:
-                    for df in [-1, 0, 1]:
-                        if dr == 0 and df == 0:
-                            continue
-                        
-                        r, f = rank + dr, file + df
-                        if 0 <= r < 8 and 0 <= f < 8:
-                            sq = chess.square(f, r)
-                            piece = board.piece_at(sq)
-                            if piece and piece.piece_type == chess.PAWN and piece.color == color:
-                                protection += 0.3
-                
-                if protection < 0.3:
-                    eval -= sign * 0.7
-            
-            # Piece mobility
-            for piece_type in [chess.BISHOP, chess.KNIGHT, chess.ROOK, chess.QUEEN]:
-                for sq in board.pieces(piece_type, color):
-                    if not any(move for move in board.legal_moves if move.from_square == sq):
-                        eval -= sign * 0.4
-        
-        # Game state evaluations
-        if board.is_repetition(2):
-            eval -= 1
-        
-        if board.can_claim_fifty_moves():
-            eval -= 1
-        
-        if board.is_insufficient_material():
-            eval -= 1
-        
-        # Mobility bonus
-        eval += 0.12 * board.legal_moves.count()
-        
-        return eval
-    
-    def minimax(self, board, depth, alpha, beta, maximizing, color, depth_initial):
-        """Optimized minimax with alpha-beta pruning and transposition table"""
-        key = board.fen()
-        
-        # Check transposition table
-        if key in self.transposition_table:
-            entry_depth, entry_eval, entry_move = self.transposition_table[key]
-            if entry_depth >= depth:
-                return entry_eval, entry_move
-        
-        # Terminal conditions
-        if depth == 0 or board.is_game_over():
-            eval = self.evaluate_board(board)
-            self.transposition_table[key] = (depth_initial - depth, eval, None)
-            return eval, None
-        
-        legal_moves = list(board.legal_moves)
-        best_move = None
-        
-        # Sort moves for better pruning (captures first)
-        legal_moves.sort(key=lambda move: (
-            board.is_capture(move),
-            board.gives_check(move),
-            move.promotion is not None
-        ), reverse=True)
-        
-        if maximizing:
-            max_eval = -float('inf')
-            for move in legal_moves:
-                board.push(move)
-                eval, _ = self.minimax(board, depth - 1, alpha, beta, False, color, depth_initial)
-                board.pop()
-                
-                if eval > max_eval:
-                    max_eval = eval
-                    best_move = move
-                
-                alpha = max(alpha, eval)
-                if beta <= alpha:
-                    break
-            
-            self.transposition_table[key] = (depth_initial - depth, max_eval, best_move)
-            return max_eval, best_move
-        else:
-            min_eval = float('inf')
-            for move in legal_moves:
-                board.push(move)
-                eval, _ = self.minimax(board, depth - 1, alpha, beta, True, color, depth_initial)
-                board.pop()
-                
-                if eval < min_eval:
-                    min_eval = eval
-                    best_move = move
-                
-                beta = min(beta, eval)
-                if beta <= alpha:
-                    break
-            
-            self.transposition_table[key] = (depth_initial - depth, min_eval, best_move)
-            return min_eval, best_move
-    
-    def q_choose_move(self, board, color):
-        """Choose a move using Q-learning and minimax"""
-        fen = board.fen()
-        legal_moves = list(board.legal_moves)
-        
-        # Opening book from Q-table
-        if board.fullmove_number == 1 and board.turn == color:
-            opening_keys = [key for key in self.qtable.keys() if key.startswith(fen)]
-            opening_moves = []
-            
-            for key in opening_keys:
-                move_str = key[len(fen):].strip()
-                if 4 <= len(move_str) <= 5:
-                    try:
-                        move = chess.Move.from_uci(move_str)
-                        if move in legal_moves:
-                            opening_moves.append(move)
-                    except Exception:
-                        continue
-            
-            if opening_moves:
-                return random.choice(opening_moves)
-        
-        # Use minimax for deeper search
-        if self.search_depth > 1:
-            # Clear transposition table for new search
-            self.transposition_table.clear()
-            _, move = self.minimax(board, self.search_depth, -float('inf'), float('inf'), 
-                                  color == chess.WHITE, color, self.search_depth)
-            if move:
-                return move
-        
-        # Exploration with epsilon probability
-        if random.random() < self.epsilon:
-            return random.choice(legal_moves)
-        
-        # Exploitation: choose best move from Q-table or evaluation
-        move_scores = []
-        for move in legal_moves:
-            q_value = self.qtable.get(fen + str(move), None)
-            if q_value is not None:
-                score = q_value
-            else:
-                board.push(move)
-                score = self.evaluate_board(board)
-                board.pop()
-            move_scores.append((move, score))
-        
-        if color == chess.WHITE:
-            best_score = max(score for _, score in move_scores)
-            best_moves = [move for move, score in move_scores if score == best_score]
-        else:
-            best_score = min(score for _, score in move_scores)
-            best_moves = [move for move, score in move_scores if score == best_score]
-        
-        return random.choice(best_moves) if best_moves else random.choice(legal_moves)
-    
-    def export_pgn(self, move_log, ia_color, player_color, result):
-        """Export game to PGN file"""
-        game = chess.pgn.Game()
-        game.headers["Event"] = "Chess Game"
-        game.headers["White"] = "IA" if ia_color == chess.WHITE else "Jugador"
-        game.headers["Black"] = "IA" if ia_color == chess.BLACK else "Jugador"
-        game.headers["Result"] = result
-        
-        node = game
-        for san in move_log:
-            try:
-                move = node.board().parse_san(san)
-                node = node.add_main_variation(move)
-            except Exception as e:
-                print(f"Error parsing SAN move {san}: {e}")
-                continue
-        
-        try:
-            with open("last_game.pgn", "w") as f:
-                print(game, file=f)
-        except IOError as e:
-            print(f"Error saving PGN: {e}")
-    
     def add_animation(self, move, board, piece_str):
         """Add an animation to the queue"""
         start_row = 7 - chess.square_rank(move.from_square)
@@ -701,7 +829,6 @@ class ChessGame:
         start_pos = (start_col * SQ_SIZE, start_row * SQ_SIZE)
         end_pos = (end_col * SQ_SIZE, end_row * SQ_SIZE)
         
-        # Determine animation type
         is_capture = board.is_capture(move)
         is_castle = board.is_castling(move)
         is_promotion = move.promotion is not None
@@ -724,7 +851,6 @@ class ChessGame:
             self.current_animation = self.animation_queue.pop(0)
             self.animation_time = 0
             
-            # Play appropriate sound
             if self.current_animation['is_capture']:
                 self.play_sound("capture")
             elif self.current_animation['is_castle']:
@@ -738,8 +864,7 @@ class ChessGame:
             self.animation_time += dt
             progress = min(1.0, self.animation_time / self.current_animation['duration'])
             
-            # Easing function for smoother animation
-            progress = 1 - (1 - progress) * (1 - progress)  # Ease out quadratic
+            progress = 1 - (1 - progress) * (1 - progress)
             
             if progress >= 1.0:
                 self.current_animation = None
@@ -753,15 +878,23 @@ class ChessGame:
         """Draw the current animation"""
         if self.current_animation is None:
             return
-        
+
         anim = self.current_animation
         x = anim['start_pos'][0] + (anim['end_pos'][0] - anim['start_pos'][0]) * progress
         y = anim['start_pos'][1] + (anim['end_pos'][1] - anim['start_pos'][1]) * progress
-        
-        # Draw the board and pieces (excluding the moving piece)
+
         self.draw_board(screen)
-        
-        # Draw all pieces except the one being animated
+
+        # Calcular casillas de origen y destino
+        from_sq = chess.square(
+            int(anim['start_pos'][0] // SQ_SIZE),
+            7 - int(anim['start_pos'][1] // SQ_SIZE)
+        )
+        to_sq = chess.square(
+            int(anim['end_pos'][0] // SQ_SIZE),
+            7 - int(anim['end_pos'][1] // SQ_SIZE)
+        )
+
         for square in chess.SQUARES:
             piece = board.piece_at(square)
             if piece:
@@ -770,20 +903,16 @@ class ChessGame:
                 color = 'w' if piece.color == chess.WHITE else 'b'
                 piece_type = piece.symbol().upper() if piece.piece_type != chess.PAWN else 'p'
                 piece_str = color + piece_type
-                
-                # Don't draw the piece that's being animated
-                if piece_str == anim['piece_str'] and square == chess.square(
-                    chess.square_file(anim['start_pos'][0] // SQ_SIZE),
-                    7 - (anim['start_pos'][1] // SQ_SIZE)
-                ):
+
+                # No dibujar la pieza animada ni en origen ni en destino
+                if piece_str == anim['piece_str'] and (square == from_sq or square == to_sq):
                     continue
-                
+
                 if piece_str in self.images:
                     screen.blit(self.images[piece_str], (col * SQ_SIZE, row * SQ_SIZE))
-        
-        # Draw the moving piece
+
+        # Dibuja la pieza animada en su posición interpolada
         if anim['piece_str'] in self.images:
-            # Add a slight bounce effect at the end
             if progress > 0.8 and anim['is_capture']:
                 bounce = math.sin((progress - 0.8) * 10 * math.pi) * 5
                 screen.blit(self.images[anim['piece_str']], (x, y - bounce))
@@ -795,7 +924,6 @@ class ChessGame:
         fen = board.fen()
         reward = 0
         
-        # Only calculate rewards for pseudo-legal moves
         if move in board.pseudo_legal_moves:
             if board.is_capture(move):
                 reward += 2 if is_ia else 1.5
@@ -830,191 +958,126 @@ class ChessGame:
         
         self.save_qtable()
     
-    def entrenamiento(self, partidas=50, visual=False):
-        """Train AI with optional visualization"""
-        if visual:
-            screen = pygame.display.set_mode((WIDTH, HEIGHT))
-            pygame.display.set_caption('Entrenamiento IA vs IA')
-            clock = pygame.time.Clock()
-        else:
-            print(f"Entrenando IA vs IA ({partidas} partidas)...")
+    def train_from_buffer(self, batch_size=32):
+        """Entrenar la Q-table desde el buffer de experiencia"""
+        if self.replay_buffer.size() < batch_size:
+            return
         
-        for i in range(partidas):
-            board = chess.Board()
-            move_log = []
-            last_move = None
+        batch = self.replay_buffer.sample(batch_size)
+        for state, action, reward, next_state, done in batch:
+            old_q = self.qtable.get(state + action, 0)
             
-            while not board.is_game_over():
-                if visual:
-                    # Draw the board
-                    mouse_pos = pygame.mouse.get_pos()
-                    self.draw_board(screen)
-                    self.draw_last_move(screen, board, last_move)
-                    self.draw_pieces(screen, board)
-                    self.draw_sidebar(screen, board, move_log, mouse_pos, False, chess.WHITE, chess.BLACK)
-                    pygame.display.flip()
-                    
-                    # Handle events
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            pygame.quit()
-                            return
+            if done:
+                new_q = reward
+            else:
+                next_actions = [str(move) for move in chess.Board(next_state).legal_moves]
+                next_max = max([self.qtable.get(next_state + a, 0) for a in next_actions], default=0)
+                new_q = reward + GAMMA * next_max
+            
+            self.qtable[state + action] = old_q + ALPHA * (new_q - old_q)
+    
+    def background_training(self, num_games=100):
+        """Entrenamiento en segundo plano"""
+        self.stop_training = False
+        for i in range(num_games):
+            if self.stop_training:
+                break
                 
-                # AI makes a move
+            board = chess.Board()
+            while not board.is_game_over() and not self.stop_training:
                 move = self.q_choose_move(board, board.turn)
                 if move:
-                    san = board.san(move)
+                    old_state = board.fen()
                     board.push(move)
-                    self.guardar_experiencia_jugada(board, move, is_ia=True)
-                    move_log.append(san)
-                    last_move = move
+                    new_state = board.fen()
                     
-                    if visual:
-                        piece = board.piece_at(move.to_square)
-                        color = 'w' if piece.color == chess.WHITE else 'b'
-                        piece_type = piece.symbol().upper() if piece.piece_type != chess.PAWN else 'p'
-                        piece_str = color + piece_type
-                        
-                        self.add_animation(move, board, piece_str)
-                        
-                        # Animate
-                        animating = True
-                        start_time = time.time()
-                        while animating:
-                            dt = clock.tick(FPS) / 1000.0
-                            progress = self.update_animations(dt)
-                            
-                            if progress is not None:
-                                self.draw_animation(screen, board, progress)
-                                pygame.display.flip()
-                            else:
-                                animating = False
-                            
-                            for event in pygame.event.get():
-                                if event.type == pygame.QUIT:
-                                    pygame.quit()
-                                    return
-                        
-                        pygame.time.delay(200)  # Delay between moves
+                    reward = 0
+                    if board.is_checkmate():
+                        reward = 10 if board.turn != chess.WHITE else -10
+                    elif board.is_stalemate():
+                        reward = 0
+                    elif board.is_check():
+                        reward = 1 if board.turn != chess.WHITE else -1
+                    
+                    self.replay_buffer.add(old_state, str(move), reward, new_state, board.is_game_over())
+                    
+                    if self.replay_buffer.size() % 100 == 0:
+                        self.train_from_buffer()
             
-            # Game over
-            result = board.result()
-            self.guardar_experiencia(result)
-            
-            if visual:
-                self.export_pgn(move_log, chess.WHITE, chess.BLACK, result)
-            
-            if not visual and (i + 1) % 10 == 0:
-                print(f"Partidas entrenadas: {i + 1}/{partidas}")
+            if i % 10 == 0:
+                self.save_qtable()
         
-        if visual:
-            pygame.time.wait(1200)
-        else:
-            print("Entrenamiento terminado.")
+        self.save_qtable()
+
+    def start_training(self, num_games=100):
+        """Iniciar entrenamiento en segundo plano"""
+        if self.training_thread and self.training_thread.is_alive():
+            return
+            
+        self.training_thread = threading.Thread(target=self.background_training, args=(num_games,))
+        self.training_thread.daemon = True
+        self.training_thread.start()
+
+    def stop_background_training(self):
+        """Detener el entrenamiento en segundo plano"""
+        self.stop_training = True
+        if self.training_thread:
+            self.training_thread.join(timeout=1.0)
     
     def draw_main_menu(self, screen, selected_idx, options):
         """Draw the main menu"""
-        # Fondo con efecto de degradado
         for y in range(HEIGHT):
             color_val = 30 + (y / HEIGHT) * 10
             pygame.draw.line(screen, (color_val, color_val + 2, color_val + 10), (0, y), (WIDTH, y))
-        
-        # Título con efecto de sombra
+
         font_title = pygame.font.SysFont('Arial', 48, bold=True)
         font_btn = pygame.font.SysFont('Arial', 32, bold=True)
         
-        # Sombra del título
         title = font_title.render("♟ Chess Game Premium", True, (20, 20, 30))
         screen.blit(title, (WIDTH//2 - title.get_width()//2 + 3, 83))
         
-        # Título principal
         title = font_title.render("♟ Chess Game Premium", True, ACCENT_COLOR)
         screen.blit(title, (WIDTH//2 - title.get_width()//2, 80))
         
-        # Opciones del menú
         for idx, text in enumerate(options):
             btn_rect = pygame.Rect(WIDTH//2 - 180, 200 + idx*90, 360, 70)
             
-            # Efecto de hover
             mouse_pos = pygame.mouse.get_pos()
             is_hover = btn_rect.collidepoint(mouse_pos)
             
             color = ACCENT_COLOR if idx == selected_idx or is_hover else BUTTON_COLOR
             pygame.draw.rect(screen, color, btn_rect, border_radius=18)
-            
-            # Efecto de resaltado para la opción seleccionada
+
             if idx == selected_idx:
                 pygame.draw.rect(screen, (255, 255, 255, 50), btn_rect, 3, border_radius=18)
             
             btn_text = font_btn.render(text, True, BUTTON_TEXT if idx != selected_idx else (30, 32, 40))
             screen.blit(btn_text, (btn_rect.x + (btn_rect.width - btn_text.get_width()) // 2, btn_rect.y + 18))
         
-        # Pie de página
         font_footer = pygame.font.SysFont('Arial', 18)
         footer_text = font_footer.render("by GitHub Copilot", True, (120, 120, 120))
         screen.blit(footer_text, (WIDTH - footer_text.get_width() - 20, HEIGHT - 40))
         
-        # Efecto de partículas en el fondo (opcional)
         for i in range(20):
             x = random.randint(0, WIDTH)
             y = random.randint(0, HEIGHT)
             size = random.randint(1, 3)
             pygame.draw.circle(screen, (200, 200, 255, 100), (x, y), size)
     
-    def show_graphics_placeholder(self, screen):
-        """Placeholder for graphics screen"""
-        # Fondo con efecto de fade
-        for alpha in range(0, 255, 5):
-            s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            s.fill((30, 32, 40, alpha))
-            screen.blit(s, (0, 0))
-            pygame.display.flip()
-            pygame.time.delay(10)
-        
-        font = pygame.font.SysFont('Arial', 36, bold=True)
-        text = font.render("Gráficas - En Desarrollo", True, ACCENT_COLOR)
-        
-        # Efecto de aparición del texto
-        for alpha in range(0, 255, 15):
-            s = pygame.Surface((text.get_width() + 20, text.get_height() + 20), pygame.SRCALPHA)
-            s.fill((30, 32, 40, alpha))
-            screen.blit(s, (WIDTH//2 - s.get_width()//2, HEIGHT//2 - s.get_height()//2))
-            
-            text_surf = font.render("Gráficas - En Desarrollo", True, ACCENT_COLOR)
-            text_surf.set_alpha(alpha)
-            screen.blit(text_surf, (WIDTH//2 - text_surf.get_width()//2, HEIGHT//2 - text_surf.get_height()//2))
-            
-            pygame.display.flip()
-            pygame.time.delay(30)
-        
-        pygame.time.delay(1500)
-        
-        # Efecto de desaparición
-        for alpha in range(255, 0, -15):
-            s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            s.fill((30, 32, 40, 255 - alpha))
-            screen.blit(s, (0, 0))
-            
-            text_surf = font.render("Gráficas - En Desarrollo", True, ACCENT_COLOR)
-            text_surf.set_alpha(alpha)
-            screen.blit(text_surf, (WIDTH//2 - text_surf.get_width()//2, HEIGHT//2 - text_surf.get_height()//2))
             
             pygame.display.flip()
             pygame.time.delay(30)
     
     def draw_game_over(self, screen, result):
         """Draw game over screen"""
-        # Fondo semitransparente
         s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         s.fill((0, 0, 0, 180))
         screen.blit(s, (0, 0))
         
-        # Caja de resultado
         result_rect = pygame.Rect(WIDTH//2 - 200, HEIGHT//2 - 100, 400, 200)
         pygame.draw.rect(screen, SIDEBAR_COLOR, result_rect, border_radius=20)
         pygame.draw.rect(screen, ACCENT_COLOR, result_rect, 3, border_radius=20)
         
-        # Texto de resultado
         font = pygame.font.SysFont('Arial', 36, bold=True)
         if result == "1-0":
             text = font.render("¡Has ganado!", True, (180, 255, 180))
@@ -1025,7 +1088,6 @@ class ChessGame:
         
         screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2 - 70))
         
-        # Botón de continuar
         font_btn = pygame.font.SysFont('Arial', 24)
         btn_rect = pygame.Rect(WIDTH//2 - 100, HEIGHT//2 + 20, 200, 50)
         pygame.draw.rect(screen, BUTTON_COLOR, btn_rect, border_radius=10)
@@ -1039,10 +1101,10 @@ class ChessGame:
     
     def main_menu(self):
         """Main menu loop"""
-        options = ["Jugar contra la IA", "Entrenar IA", "Ver gráficas", "Salir"]
+        options = ["Jugar contra la IA", "Entrenar IA", "Salir"]
         selected_idx = 0
         running = True
-        
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -1063,8 +1125,6 @@ class ChessGame:
                             self.game_state = "menu"
                         elif options[selected_idx] == "Entrenar IA":
                             self.entrenamiento(partidas=1, visual=True)
-                        elif options[selected_idx] == "Ver gráficas":
-                            self.show_graphics_placeholder(self.screen)
                         elif options[selected_idx] == "Salir":
                             running = False
                             break
@@ -1082,16 +1142,13 @@ class ChessGame:
                                     self.game_state = "menu"
                                 elif text == "Entrenar IA":
                                     self.entrenamiento(partidas=1, visual=True)
-                                elif text == "Ver gráficas":
-                                    self.show_graphics_placeholder(self.screen)
                                 elif text == "Salir":
                                     running = False
                                     break
-            
+
             if not running:
                 break
-            
-            # Solo dibujar si el display está inicializado
+
             if pygame.display.get_init():
                 try:
                     self.draw_main_menu(self.screen, selected_idx, options)
@@ -1099,9 +1156,9 @@ class ChessGame:
                 except pygame.error:
                     running = False
                     break
-            
+
             self.clock.tick(FPS)
-        
+
         pygame.quit()
         sys.exit()
     
@@ -1122,7 +1179,7 @@ class ChessGame:
         promotion_buttons = []
         ia_move_pending = False
         ia_move_timer = 0
-        IA_DELAY = 400
+        IA_DELAY = 100
         game_result = None
         reset_hover = False
         
@@ -1150,16 +1207,13 @@ class ChessGame:
         
         running = True
         while running:
-            dt = self.clock.tick(FPS) / 1000.0  # Delta time in seconds
+            dt = self.clock.tick(FPS) / 1000.0
             
-            # Actualizar animaciones
             animation_progress = self.update_animations(dt)
             
-            # Obtener posición del ratón
             mouse_pos = pygame.mouse.get_pos()
             reset_hover = False
             
-            # Dibujar el tablero y piezas
             if animation_progress is None:
                 self.draw_board(self.screen)
                 self.draw_last_move(self.screen, board, last_move)
@@ -1168,21 +1222,17 @@ class ChessGame:
             else:
                 self.draw_animation(self.screen, board, animation_progress)
             
-            # Dibujar barra lateral
             button_rect, diff_buttons = self.draw_sidebar(self.screen, board, move_log, mouse_pos, reset_hover, ia_color, player_color)
             
-            # Dibujar opciones de promoción si es necesario
             if promotion_pending:
                 promotion_buttons = self.draw_promotion_choices(
                     self.screen, promotion_pending[2], (BOARD_SIZE//2 - 160, BOARD_SIZE//2 - 35))
             else:
                 promotion_buttons = []
             
-            # Dibujar pantalla de juego terminado
             if game_result:
                 continue_btn = self.draw_game_over(self.screen, game_result)
             
-            # Lógica de IA
             if not game_result and board.turn == ia_color and not promotion_pending and not dragging and animation_progress is None:
                 if not ia_move_pending:
                     ia_move_pending = True
@@ -1203,11 +1253,9 @@ class ChessGame:
                         move_log.append(san)
                         last_move = move
                         
-                        # Reproducir sonido de jaque si es necesario
                         if board.is_check():
                             self.play_sound("check")
                         
-                        # Verificar estado del juego
                         if board.is_checkmate():
                             game_result = "0-1"
                             self.play_sound("checkmate")
@@ -1228,7 +1276,6 @@ class ChessGame:
             
             pygame.display.flip()
             
-            # Manejo de eventos
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -1237,7 +1284,6 @@ class ChessGame:
                     if event.button == 1 and not game_result:
                         x, y = event.pos
                         
-                        # Botón de rendición
                         if button_rect.collidepoint(x, y):
                             reset_hover = True
                             game_result = "0-1"
@@ -1245,12 +1291,10 @@ class ChessGame:
                             self.export_pgn(move_log, ia_color, player_color, "0-1")
                             self.save_qtable()
                         
-                        # Selector de dificultad
                         for rect, diff in diff_buttons:
                             if rect.collidepoint(x, y):
                                 self.set_difficulty(diff)
                         
-                        # Interacción con el tablero
                         if x < BOARD_SIZE and y < BOARD_SIZE and not promotion_pending and animation_progress is None:
                             col = x // SQ_SIZE
                             row = y // SQ_SIZE
@@ -1263,19 +1307,15 @@ class ChessGame:
                                 selected_square = square
                                 drag_piece = piece
                                 drag_pos = event.pos
-                                # Obtener movimientos válidos para esta pieza
                                 valid_moves = [move for move in board.legal_moves if move.from_square == square]
                                 self.play_sound("click")
                             elif selected_square is not None:
-                                # Intentar mover a la casilla seleccionada
                                 move = chess.Move(selected_square, square)
                                 if move in valid_moves:
-                                    # Verificar promoción
                                     if drag_piece and drag_piece.piece_type == chess.PAWN and \
                                        (chess.square_rank(square) == 0 or chess.square_rank(square) == 7):
                                         promotion_pending = (selected_square, square, drag_piece.color)
                                     else:
-                                        # Mover la pieza
                                         san = board.san(move)
                                         piece = board.piece_at(selected_square)
                                         color = 'w' if piece.color == chess.WHITE else 'b'
@@ -1289,11 +1329,9 @@ class ChessGame:
                                         move_log.append(san)
                                         last_move = move
                                         
-                                        # Reproducir sonido de jaque si es necesario
                                         if board.is_check():
                                             self.play_sound("check")
                                         
-                                        # Verificar estado del juego
                                         if board.is_checkmate():
                                             game_result = "1-0"
                                             self.play_sound("checkmate")
@@ -1311,7 +1349,6 @@ class ChessGame:
                                         selected_square = None
                                         valid_moves = []
                                 else:
-                                    # Seleccionar otra pieza
                                     if piece and piece.color == player_color:
                                         selected_square = square
                                         valid_moves = [move for move in board.legal_moves if move.from_square == square]
@@ -1320,7 +1357,6 @@ class ChessGame:
                                         selected_square = None
                                         valid_moves = []
                         
-                        # Opciones de promoción
                         elif promotion_pending and promotion_buttons:
                             clicked = False
                             for rect, piece_type in promotion_buttons:
@@ -1341,7 +1377,6 @@ class ChessGame:
                                         move_log.append(san)
                                         last_move = move
                                         
-                                        # Verificar estado del juego
                                         if board.is_checkmate():
                                             game_result = "1-0"
                                             self.play_sound("checkmate")
@@ -1367,7 +1402,6 @@ class ChessGame:
                                 selected_square = None
                                 valid_moves = []
                     
-                    # Botón de continuar en pantalla de juego terminado
                     elif game_result and event.button == 1:
                         x, y = event.pos
                         if continue_btn.collidepoint(x, y):
@@ -1387,12 +1421,10 @@ class ChessGame:
                             if drag_start != target:
                                 move = chess.Move(drag_start, target)
                                 
-                                # Verificar promoción
                                 if drag_piece and drag_piece.piece_type == chess.PAWN and \
                                    (chess.square_rank(target) == 0 or chess.square_rank(target) == 7):
                                     promotion_pending = (drag_start, target, drag_piece.color)
                                 elif move in valid_moves:
-                                    # Mover la pieza
                                     san = board.san(move)
                                     piece = board.piece_at(drag_start)
                                     color = 'w' if piece.color == chess.WHITE else 'b'
@@ -1406,11 +1438,9 @@ class ChessGame:
                                     move_log.append(san)
                                     last_move = move
                                     
-                                    # Reproducir sonido de jaque si es necesario
                                     if board.is_check():
                                         self.play_sound("check")
                                     
-                                    # Verificar estado del juego
                                     if board.is_checkmate():
                                         game_result = "1-0"
                                         self.play_sound("checkmate")
@@ -1435,7 +1465,6 @@ class ChessGame:
                     if dragging:
                         drag_pos = event.pos
         
-        # No llamar a pygame.quit() aquí, solo salir del bucle
         return
 
 if __name__ == "__main__":

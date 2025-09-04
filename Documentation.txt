@@ -1,0 +1,75 @@
+# Chess Game Premium - Documentación
+
+## Descripción General
+Este proyecto es un juego de ajedrez completo con interfaz gráfica, inteligencia artificial (IA) basada en Q-learning, animaciones, sonidos y experiencia persistente. El objetivo es ofrecer una experiencia de ajedrez desafiante y visualmente atractiva, tanto para jugadores humanos como para la IA, que aprende y mejora con el tiempo.
+
+## Estructura del Proyecto
+
+- `Game.py`: Archivo principal. Contiene toda la lógica del juego, la interfaz gráfica (usando pygame), la IA, el sistema de animaciones, sonidos y la gestión de la experiencia.
+- `ia_qtable.json`: Archivo de datos donde la IA guarda su experiencia (Q-table) sobre posiciones, jugadas y recompensas. Incluye conocimiento inicial de aperturas, defensas y finales.
+- `assets/`: Carpeta con imágenes de las piezas de ajedrez en formato PNG.
+    - `wK.png`, `wQ.png`, `wR.png`, `wB.png`, `wN.png`, `wp.png`: Piezas blancas.
+    - `bK.png`, `bQ.png`, `bR.png`, `bB.png`, `bN.png`, `bp.png`: Piezas negras.
+
+## Requisitos
+- Python 3.8+
+- pygame
+- python-chess
+- numpy
+
+Instalación de dependencias:
+```
+pip install pygame python-chess numpy
+```
+
+## Características Principales
+
+- **Interfaz Gráfica:**
+  - Tablero de ajedrez con animaciones de movimiento.
+  - Barra lateral con historial de jugadas, estadísticas y botones de control.
+  - Soporte para arrastrar y soltar piezas.
+  
+- **Inteligencia Artificial (IA):**
+  - Basada en Q-learning, con experiencia persistente en `ia_qtable.json`.
+  - Conocimiento inicial de aperturas, defensas y finales clásicos.
+  - Algoritmo de búsqueda con minimax y poda alfa-beta.
+  - Dificultad configurable (fácil, normal, difícil).
+
+- **Sonidos:**
+  - Efectos para movimientos, capturas, jaque, jaque mate, promoción y enroque.
+
+- **Animaciones:**
+  - Movimiento suave de piezas y efectos visuales para jugadas especiales.
+
+- **Entrenamiento:**
+  - Modo de entrenamiento automático para mejorar la IA jugando contra sí misma.
+
+- **Estadísticas:**
+  - Registro de partidas jugadas, victorias de la IA, victorias del jugador y empates.
+
+## Uso
+
+1. Ejecuta el juego:
+   ```
+   python Game.py
+   ```
+2. Usa el menú principal para:
+   - Jugar contra la IA.
+   - Entrenar la IA (modo automático).
+   - Salir del juego.
+3. Durante la partida:
+   - Arrastra y suelta piezas para mover.
+   - Usa la barra lateral para ver historial y estadísticas.
+   - Puedes rendirte con el botón correspondiente.
+
+## Personalización y Extensión
+- Puedes agregar más experiencia a la IA editando `ia_qtable.json` y añadiendo nuevas posiciones/jugadas.
+- Las imágenes de las piezas pueden ser reemplazadas por otras en la carpeta `assets/`.
+- El código está documentado y modularizado para facilitar la extensión de funcionalidades.
+
+## Créditos
+- Desarrollado con ayuda de GitHub Copilot.
+- Basado en pygame, python-chess y numpy.
+
+## Licencia
+Este proyecto es de uso libre para fines educativos y personales.
