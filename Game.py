@@ -1,16 +1,40 @@
 import json
 import os
-import collections
 import random
 import pygame
 import sys
 import chess
 import chess.pgn
 
-# --- Q-learning IA ---
+# --- Configuración ---
 Q_FILE = "ia_qtable.json"
 ALPHA = 0.5
 GAMMA = 0.9
+BOARD_SIZE = 700
+SIDEBAR_WIDTH = 420
+WIDTH, HEIGHT = BOARD_SIZE + SIDEBAR_WIDTH, BOARD_SIZE
+DIMENSION = 8
+SQ_SIZE = BOARD_SIZE // DIMENSION
+FPS = 60
+IMAGES = {}
+LIGHT_SQUARE = (230, 230, 230)
+DARK_SQUARE = (80, 80, 80)
+SIDEBAR_COLOR = (36, 37, 46)
+TEXT_COLOR = (230, 230, 230)
+ACCENT_COLOR = (255, 204, 0)
+HIST_BG = (50, 50, 65)
+BUTTON_COLOR = (60, 60, 80)
+BUTTON_HOVER = (90, 90, 120)
+BUTTON_TEXT = (255, 255, 255)
+LAST_MOVE_COLOR = (255, 204, 0, 80)
+difficulty = "hard"
+epsilon_map = {"easy": 0.2, "normal": 0.01, "hard": 0.0}
+search_depth_map = {"easy": 1, "normal": 1, "hard": 2}
+epsilon = epsilon_map[difficulty]
+search_depth = search_depth_map[difficulty]
+DIFFICULTIES = ["easy", "normal", "hard"]
+difficulty_idx = DIFFICULTIES.index(difficulty)
+transposition_table = {}
 
 def load_qtable():
     if os.path.exists(Q_FILE):
@@ -24,40 +48,24 @@ def save_qtable(qtable):
 
 qtable = load_qtable()
 
-# --- Configuración ---
-BOARD_SIZE = 700
-SIDEBAR_WIDTH = 420
-WIDTH, HEIGHT = BOARD_SIZE + SIDEBAR_WIDTH, BOARD_SIZE
-DIMENSION = 8
-SQ_SIZE = BOARD_SIZE // DIMENSION
-FPS = 60
-IMAGES = {}
-
-LIGHT_SQUARE = (230, 230, 230)
-DARK_SQUARE = (80, 80, 80)
-SIDEBAR_COLOR = (36, 37, 46)
-TEXT_COLOR = (230, 230, 230)
-ACCENT_COLOR = (255, 204, 0)
-HIST_BG = (50, 50, 65)
-BUTTON_COLOR = (60, 60, 80)
-BUTTON_HOVER = (90, 90, 120)
-BUTTON_TEXT = (255, 255, 255)
-LAST_MOVE_COLOR = (255, 204, 0, 80)
-
-# --- Dificultad ---
-difficulty = "hard"  # "easy", "normal", "hard"
-epsilon_map = {"easy": 0.2, "normal": 0.01, "hard": 0.0}
-search_depth_map = {"easy": 1, "normal": 1, "hard": 2}
-epsilon = epsilon_map[difficulty]
-search_depth = search_depth_map[difficulty]
+def set_difficulty(idx):
+    global difficulty, epsilon, search_depth
+    difficulty = DIFFICULTIES[idx]
+    epsilon = epsilon_map[difficulty]
+    search_depth = search_depth_map[difficulty]
 
 def load_images():
     pieces = ['wp', 'wR', 'wN', 'wB', 'wQ', 'wK', 'bp', 'bR', 'bN', 'bB', 'bQ', 'bK']
     for piece in pieces:
         path = os.path.join('assets', f'{piece}.png')
-        if os.path.exists(path):
-            img = pygame.image.load(path).convert_alpha()
-            IMAGES[piece] = pygame.transform.smoothscale(img, (SQ_SIZE, SQ_SIZE))
+        try:
+            if os.path.exists(path):
+                img = pygame.image.load(path).convert_alpha()
+                IMAGES[piece] = pygame.transform.smoothscale(img, (SQ_SIZE, SQ_SIZE))
+            else:
+                print(f"Advertencia: Falta la imagen {path}")
+        except Exception as e:
+            print(f"Error cargando imagen {path}: {e}")
 
 def draw_board(screen):
     for r in range(DIMENSION):
@@ -68,9 +76,7 @@ def draw_board(screen):
 def draw_last_move(screen, move):
     if move is None:
         return
-    from_sq = move.from_square
-    to_sq = move.to_square
-    for sq in [from_sq, to_sq]:
+    for sq in [move.from_square, move.to_square]:
         row = 7 - chess.square_rank(sq)
         col = chess.square_file(sq)
         s = pygame.Surface((SQ_SIZE, SQ_SIZE), pygame.SRCALPHA)
@@ -84,10 +90,7 @@ def draw_pieces(screen, board):
             row = 7 - chess.square_rank(square)
             col = chess.square_file(square)
             color = 'w' if piece.color == chess.WHITE else 'b'
-            if piece.piece_type == chess.PAWN:
-                piece_str = color + 'p'
-            else:
-                piece_str = color + piece.symbol().upper()
+            piece_str = color + (piece.symbol().upper() if piece.piece_type != chess.PAWN else 'p')
             if piece_str in IMAGES:
                 screen.blit(IMAGES[piece_str], (col*SQ_SIZE, row*SQ_SIZE))
 
@@ -159,13 +162,9 @@ def draw_promotion_choices(screen, color, pos):
 def evaluate_board(board):
     values = {chess.PAWN: 1, chess.KNIGHT: 3.2, chess.BISHOP: 3.3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
     eval = 0
-
-    # Material
     for piece_type in values:
         eval += len(board.pieces(piece_type, chess.WHITE)) * values[piece_type]
         eval -= len(board.pieces(piece_type, chess.BLACK)) * values[piece_type]
-
-    # Penalización por perder dama o torre
     if len(board.pieces(chess.QUEEN, chess.WHITE)) < 1:
         eval -= 4
     if len(board.pieces(chess.QUEEN, chess.BLACK)) < 1:
@@ -174,14 +173,10 @@ def evaluate_board(board):
         eval -= 2
     if len(board.pieces(chess.ROOK, chess.BLACK)) < 2:
         eval += 2
-
-    # Bonificación por pareja de alfiles
     if len(board.pieces(chess.BISHOP, chess.WHITE)) >= 2:
         eval += 0.5
     if len(board.pieces(chess.BISHOP, chess.BLACK)) >= 2:
         eval -= 0.5
-
-    # Penalización por piezas indefensas (no defendidas por otra pieza propia)
     for color in [chess.WHITE, chess.BLACK]:
         for sq in board.pieces(chess.QUEEN, color) | board.pieces(chess.ROOK, color) | board.pieces(chess.BISHOP, color) | board.pieces(chess.KNIGHT, color):
             defenders = [att for att in board.attackers(color, sq) if board.piece_at(att) and board.piece_at(att).color == color]
@@ -190,11 +185,7 @@ def evaluate_board(board):
                     eval -= 0.7
                 else:
                     eval += 0.7
-
-    # Bonificación por movilidad (más jugadas legales es mejor)
     eval += 0.12 * len(list(board.legal_moves))
-
-    # Control del centro (premia piezas en las casillas centrales)
     center_squares = [chess.D4, chess.D5, chess.E4, chess.E5]
     for sq in center_squares:
         piece = board.piece_at(sq)
@@ -203,19 +194,15 @@ def evaluate_board(board):
                 eval += 0.4
             else:
                 eval -= 0.4
-
-    # Estructura de peones
     for color in [chess.WHITE, chess.BLACK]:
         pawns = board.pieces(chess.PAWN, color)
         files = [chess.square_file(sq) for sq in pawns]
-        # Peones doblados
         for f in set(files):
             if files.count(f) > 1:
                 if color == chess.WHITE:
                     eval -= 0.25 * (files.count(f) - 1)
                 else:
                     eval += 0.25 * (files.count(f) - 1)
-        # Peones aislados
         for sq in pawns:
             file = chess.square_file(sq)
             neighbors = [file - 1, file + 1]
@@ -229,7 +216,6 @@ def evaluate_board(board):
                     eval -= 0.3
                 else:
                     eval += 0.3
-        # Peones pasados
         for sq in pawns:
             rank = chess.square_rank(sq)
             file = chess.square_file(sq)
@@ -245,8 +231,6 @@ def evaluate_board(board):
                     eval += 0.4
                 else:
                     eval -= 0.4
-
-    # Penalización por rey expuesto (sin peones cerca)
     for color in [chess.WHITE, chess.BLACK]:
         king_sq = list(board.pieces(chess.KING, color))
         if king_sq:
@@ -267,8 +251,6 @@ def evaluate_board(board):
                     eval -= 0.7
                 else:
                     eval += 0.7
-
-    # Penalización por piezas atrapadas (sin movimientos)
     for color in [chess.WHITE, chess.BLACK]:
         for piece_type in [chess.BISHOP, chess.KNIGHT, chess.ROOK, chess.QUEEN]:
             for sq in board.pieces(piece_type, color):
@@ -278,20 +260,22 @@ def evaluate_board(board):
                         eval -= 0.4
                     else:
                         eval += 0.4
-
-    # Penalización por repetición, tablas, material insuficiente
     if board.is_repetition(2):
         eval -= 1
     if board.can_claim_fifty_moves():
         eval -= 1
     if board.is_insufficient_material():
         eval -= 1
-
     return eval
 
 def minimax(board, depth, alpha, beta, maximizing, color):
+    key = board.fen()
+    if key in transposition_table and transposition_table[key][0] >= depth:
+        return transposition_table[key][1], transposition_table[key][2]
     if depth == 0 or board.is_game_over():
-        return evaluate_board(board), None
+        eval = evaluate_board(board)
+        transposition_table[key] = (depth, eval, None)
+        return eval, None
     legal_moves = list(board.legal_moves)
     best_move = None
     if maximizing:
@@ -306,6 +290,7 @@ def minimax(board, depth, alpha, beta, maximizing, color):
             alpha = max(alpha, eval)
             if beta <= alpha:
                 break
+        transposition_table[key] = (depth, max_eval, best_move)
         return max_eval, best_move
     else:
         min_eval = float('inf')
@@ -319,12 +304,26 @@ def minimax(board, depth, alpha, beta, maximizing, color):
             beta = min(beta, eval)
             if beta <= alpha:
                 break
+        transposition_table[key] = (depth, min_eval, best_move)
         return min_eval, best_move
 
 def q_choose_move(board, color, epsilon=epsilon):
     fen = board.fen()
     legal_moves = list(board.legal_moves)
-    # Si dificultad alta, usa minimax con alpha-beta
+    if board.fullmove_number == 1 and board.turn == color:
+        opening_keys = [key for key in qtable.keys() if key.startswith(fen)]
+        opening_moves = []
+        for key in opening_keys:
+            move_str = key[len(fen):].strip()
+            if 4 <= len(move_str) <= 5:
+                try:
+                    move = chess.Move.from_uci(move_str)
+                    if move in legal_moves:
+                        opening_moves.append(move)
+                except Exception:
+                    continue
+        if opening_moves:
+            return random.choice(opening_moves)
     if search_depth > 1:
         _, move = minimax(board, search_depth, -float('inf'), float('inf'), color == chess.WHITE, color)
         if move:
@@ -349,8 +348,7 @@ def q_choose_move(board, color, epsilon=epsilon):
         best_moves = [move for move, score in move_scores if score == best_score]
     return random.choice(best_moves)
 
-game_memory = []
-stats = collections.defaultdict(int)
+stats = {"games": 0, "ia_wins": 0, "player_wins": 0, "draws": 0}
 
 def export_pgn(move_log, ia_color, player_color, result):
     game = chess.pgn.Game()
@@ -360,10 +358,207 @@ def export_pgn(move_log, ia_color, player_color, result):
     game.headers["Result"] = result
     node = game
     for san in move_log:
-        move = node.board().parse_san(san)
-        node = node.add_main_variation(move)
+        try:
+            move = node.board().parse_san(san)
+            node = node.add_main_variation(move)
+        except Exception:
+            continue
     with open("last_game.pgn", "w") as f:
         print(game, file=f)
+
+def animate_move(screen, move, board, images, duration=0.2):
+    if move is None:
+        return
+    # Obtén la pieza desde la casilla de origen ANTES de mover
+    piece = board.piece_at(move.from_square)
+    if not piece:
+        return
+    color = 'w' if piece.color == chess.WHITE else 'b'
+    piece_str = color + (piece.symbol().upper() if piece.piece_type != chess.PAWN else 'p')
+    if piece_str not in images:
+        return
+    start_row = 7 - chess.square_rank(move.from_square)
+    start_col = chess.square_file(move.from_square)
+    end_row = 7 - chess.square_rank(move.to_square)
+    end_col = chess.square_file(move.to_square)
+    start_pos = (start_col * SQ_SIZE, start_row * SQ_SIZE)
+    end_pos = (end_col * SQ_SIZE, end_row * SQ_SIZE)
+    frames = int(FPS * duration)
+    for i in range(frames):
+        x = start_pos[0] + (end_pos[0] - start_pos[0]) * i / frames
+        y = start_pos[1] + (end_pos[1] - start_pos[1]) * i / frames
+        draw_board(screen)
+        draw_pieces(screen, board)
+        screen.blit(images[piece_str], (x, y))
+        pygame.display.flip()
+        pygame.time.delay(int(1000 * duration / frames))
+
+def guardar_experiencia_jugada(board, move, is_ia):
+    fen = board.fen()
+    reward = 0
+    # Solo calcula recompensas si el movimiento es pseudo-legal
+    if move in board.pseudo_legal_moves:
+        if board.is_capture(move):
+            reward += 2 if is_ia else 1.5
+        if board.gives_check(move):
+            reward += 1 if is_ia else 0.7
+        if move.promotion:
+            reward += 2 if is_ia else 1.5
+        board.push(move)
+        if board.is_check():
+            reward -= 2 if is_ia else 1.5
+        if board.is_checkmate():
+            reward += 10 if is_ia else 8
+        if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves():
+            reward -= 2
+        board.pop()
+    key = fen + str(move)
+    old_q = qtable.get(key, 0)
+    if reward != 0:
+        qtable[key] = old_q + ALPHA * (reward - old_q)
+
+def guardar_experiencia(resultado):
+    stats['games'] += 1
+    if resultado == "1-0":
+        stats['player_wins'] += 1
+    elif resultado == "0-1":
+        stats['ia_wins'] += 1
+    else:
+        stats['draws'] += 1
+    save_qtable(qtable)
+
+def entrenamiento_offline(partidas=50):
+    print("Entrenando IA vs IA...")
+    for i in range(partidas):
+        board = chess.Board()
+        ia_color = random.choice([chess.WHITE, chess.BLACK])
+        while not board.is_game_over():
+            move = q_choose_move(board, board.turn)
+            if move:
+                board.push(move)
+                guardar_experiencia_jugada(board, move, is_ia=True)
+        result = board.result()
+        guardar_experiencia(result)
+        if (i+1) % 10 == 0:
+            print(f"Partidas entrenadas: {i+1}/{partidas}")
+    print("Entrenamiento terminado.")
+
+def entrenamiento_visual(partidas=1):
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption('Entrenamiento IA vs IA')
+    clock = pygame.time.Clock()
+    load_images()
+    for partida in range(partidas):
+        board = chess.Board()
+        move_log = []
+        dragging = False
+        drag_start = None
+        drag_piece = None
+        drag_pos = (0, 0)
+        last_move = None
+        ia_white = chess.WHITE
+        ia_black = chess.BLACK
+        running = True
+        promotion_pending = None
+        promotion_buttons = []
+        ia_move_pending = False
+        ia_move_timer = 0
+        IA_DELAY = 400
+        while running:
+            mouse_pos = pygame.mouse.get_pos()
+            reset_hover = False
+            draw_board(screen)
+            draw_last_move(screen, last_move)
+            draw_pieces(screen, board)
+            button_rect = draw_sidebar(screen, board, move_log, mouse_pos, reset_hover, ia_white, ia_black)
+            pygame.display.flip()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+            if not board.is_game_over():
+                move = q_choose_move(board, board.turn)
+                if move:
+                    san = board.san(move)
+                    board.push(move)
+                    guardar_experiencia_jugada(board, move, is_ia=True)
+                    move_log.append(san)
+                    last_move = move
+                    animate_move(screen, move, board, IMAGES)
+                    pygame.time.delay(IA_DELAY)
+            else:
+                result = board.result()
+                guardar_experiencia(result)
+                export_pgn(move_log, ia_white, ia_black, result)
+                save_qtable(qtable)
+                running = False
+            clock.tick(FPS)
+    pygame.time.wait(1200)
+
+# En main_menu, reemplaza la llamada a entrenamiento_offline por entrenamiento_visual:
+def main_menu():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption('Chess Game Premium')
+    clock = pygame.time.Clock()
+    options = ["Jugar contra la IA", "Entrenar IA", "Ver gráficas", "Salir"]
+    selected_idx = 0
+    running = True
+    while running:
+        draw_main_menu(screen, selected_idx, options)
+        pygame.display.flip()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key in [pygame.K_DOWN, pygame.K_s]:
+                    selected_idx = (selected_idx + 1) % len(options)
+                elif event.key in [pygame.K_UP, pygame.K_w]:
+                    selected_idx = (selected_idx - 1) % len(options)
+                elif event.key in [pygame.K_RETURN, pygame.K_SPACE]:
+                    if options[selected_idx] == "Jugar contra la IA":
+                        main()
+                    elif options[selected_idx] == "Entrenar IA":
+                        entrenamiento_visual(partidas=1)
+                    elif options[selected_idx] == "Ver gráficas":
+                        show_graphics_placeholder(screen)
+                    elif options[selected_idx] == "Salir":
+                        pygame.quit()
+                        sys.exit()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:
+                    mx, my = event.pos
+                    for idx, text in enumerate(options):
+                        btn_rect = pygame.Rect(WIDTH//2 - 180, 200 + idx*90, 360, 70)
+                        if btn_rect.collidepoint(mx, my):
+                            selected_idx = idx
+                            if text == "Jugar contra la IA":
+                                main()
+                            elif text == "Entrenar IA":
+                                entrenamiento_visual(partidas=1)
+                            elif text == "Ver gráficas":
+                                show_graphics_placeholder(screen)
+                            elif text == "Salir":
+                                pygame.quit()
+                                sys.exit()
+        clock.tick(60)
+
+def draw_main_menu(screen, selected_idx, options):
+    screen.fill((30, 32, 40))
+    font_title = pygame.font.SysFont('Arial', 48, bold=True)
+    font_btn = pygame.font.SysFont('Arial', 32, bold=True)
+    title = font_title.render("♟ Chess Game Premium", True, ACCENT_COLOR)
+    screen.blit(title, (WIDTH//2 - title.get_width()//2, 80))
+    for idx, text in enumerate(options):
+        btn_rect = pygame.Rect(WIDTH//2 - 180, 200 + idx*90, 360, 70)
+        color = ACCENT_COLOR if idx == selected_idx else BUTTON_COLOR
+        pygame.draw.rect(screen, color, btn_rect, border_radius=18)
+        btn_text = font_btn.render(text, True, BUTTON_TEXT if idx != selected_idx else (30,32,40))
+        screen.blit(btn_text, (btn_rect.x + 60, btn_rect.y + 18))
+    font_footer = pygame.font.SysFont('Arial', 18)
+    screen.blit(font_footer.render("by GitHub Copilot", True, (120,120,120)), (WIDTH-200, HEIGHT-40))
 
 def main():
     pygame.init()
@@ -371,7 +566,6 @@ def main():
     pygame.display.set_caption('Ajedrez (pygame + python-chess)')
     clock = pygame.time.Clock()
     load_images()
-
     board = chess.Board()
     move_log = []
     dragging = False
@@ -379,20 +573,14 @@ def main():
     drag_piece = None
     drag_pos = (0, 0)
     last_move = None
-
     ia_color = random.choice([chess.WHITE, chess.BLACK])
     player_color = chess.BLACK if ia_color == chess.WHITE else chess.WHITE
-
-    game_memory = []
     running = True
-
     promotion_pending = None
     promotion_buttons = []
-
     ia_move_pending = False
     ia_move_timer = 0
     IA_DELAY = 400
-
     def reset_game():
         nonlocal board, move_log, dragging, drag_start, drag_piece, drag_pos, ia_color, player_color, promotion_pending, promotion_buttons, ia_move_pending, ia_move_timer, last_move
         board = chess.Board()
@@ -403,33 +591,14 @@ def main():
         drag_pos = (0, 0)
         ia_color = random.choice([chess.WHITE, chess.BLACK])
         player_color = chess.BLACK if ia_color == chess.WHITE else chess.WHITE
-        game_memory.clear()
         promotion_pending = None
         promotion_buttons = []
         ia_move_pending = False
         ia_move_timer = 0
         last_move = None
-
-    def guardar_experiencia(resultado):
-        # Guarda la experiencia de la partida actual
-        stats['games'] += 1
-        if resultado == "1-0":
-            stats['player_wins'] += 1
-        elif resultado == "0-1":
-            stats['ia_wins'] += 1
-        else:
-            stats['draws'] += 1
-        for fen, move, reward in game_memory:
-            key = fen + str(move)
-            old_q = qtable.get(key, 0)
-            qtable[key] = old_q + ALPHA * (reward - old_q)
-        save_qtable(qtable)
-        game_memory.clear()
-
     while running:
         mouse_pos = pygame.mouse.get_pos()
         reset_hover = False
-
         draw_board(screen)
         draw_last_move(screen, last_move)
         if dragging and drag_piece:
@@ -441,30 +610,20 @@ def main():
                     row = 7 - chess.square_rank(square)
                     col = chess.square_file(square)
                     color = 'w' if piece.color == chess.WHITE else 'b'
-                    if piece.piece_type == chess.PAWN:
-                        piece_str = color + 'p'
-                    else:
-                        piece_str = color + piece.symbol().upper()
+                    piece_str = color + (piece.symbol().upper() if piece.piece_type != chess.PAWN else 'p')
                     if piece_str in IMAGES:
                         screen.blit(IMAGES[piece_str], (col*SQ_SIZE, row*SQ_SIZE))
             color = 'w' if drag_piece.color == chess.WHITE else 'b'
-            if drag_piece.piece_type == chess.PAWN:
-                piece_str = color + 'p'
-            else:
-                piece_str = color + drag_piece.symbol().upper()
+            piece_str = color + (drag_piece.symbol().upper() if drag_piece.piece_type != chess.PAWN else 'p')
             if piece_str in IMAGES:
                 screen.blit(IMAGES[piece_str], (drag_pos[0] - SQ_SIZE//2, drag_pos[1] - SQ_SIZE//2))
         else:
             draw_pieces(screen, board)
-
         button_rect = draw_sidebar(screen, board, move_log, mouse_pos, reset_hover, ia_color, player_color)
-
         if promotion_pending:
             promotion_buttons = draw_promotion_choices(screen, promotion_pending[2], (BOARD_SIZE//2 - 160, BOARD_SIZE//2 - 35))
         else:
             promotion_buttons = []
-
-        # Turno de la IA (no bloquea la interfaz)
         if board.turn == ia_color and not promotion_pending and not dragging and not board.is_game_over():
             if not ia_move_pending:
                 ia_move_pending = True
@@ -474,23 +633,24 @@ def main():
                 if move:
                     san = board.san(move)
                     board.push(move)
+                    guardar_experiencia_jugada(board, move, is_ia=True)
                     move_log.append(san)
                     last_move = move
-                    # Experiencia: mate, tablas, normal
+                    animate_move(screen, move, board, IMAGES)
                     if board.is_checkmate():
                         guardar_experiencia("0-1")
                         export_pgn(move_log, ia_color, player_color, "0-1")
+                        save_qtable(qtable)
                         reset_game()
                     elif board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
                         guardar_experiencia("1/2-1/2")
                         export_pgn(move_log, ia_color, player_color, "1/2-1/2")
+                        save_qtable(qtable)
                         reset_game()
                 ia_move_pending = False
         else:
             ia_move_pending = False
-
         pygame.display.flip()
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -501,8 +661,9 @@ def main():
                         reset_hover = True
                         guardar_experiencia("0-1")
                         export_pgn(move_log, ia_color, player_color, "0-1")
+                        save_qtable(qtable)
                         reset_game()
-                    elif x < BOARD_SIZE and y < BOARD_SIZE and not promotion_pending:
+                    elif x < BOARD_SIZE and y < BOARD_SIZE and not promotion_pending and not board.is_game_over():
                         col = x // SQ_SIZE
                         row = y // SQ_SIZE
                         square = chess.square(col, 7 - row)
@@ -513,26 +674,34 @@ def main():
                             drag_piece = piece
                             drag_pos = event.pos
                     elif promotion_pending and promotion_buttons:
+                        clicked = False
                         for rect, piece_type in promotion_buttons:
                             if rect.collidepoint(x, y):
                                 move = chess.Move(promotion_pending[0], promotion_pending[1], promotion=piece_type)
                                 if move in board.legal_moves:
                                     san = board.san(move)
                                     board.push(move)
+                                    guardar_experiencia_jugada(board, move, is_ia=False)
                                     move_log.append(san)
                                     last_move = move
+                                    animate_move(screen, move, board, IMAGES)
                                     if board.is_checkmate():
                                         guardar_experiencia("1-0")
                                         export_pgn(move_log, ia_color, player_color, "1-0")
+                                        save_qtable(qtable)
                                         reset_game()
                                     elif board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
                                         guardar_experiencia("1/2-1/2")
                                         export_pgn(move_log, ia_color, player_color, "1/2-1/2")
+                                        save_qtable(qtable)
                                         reset_game()
                                 promotion_pending = None
+                                clicked = True
                                 break
+                        if not clicked:
+                            promotion_pending = None
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 1 and dragging and not promotion_pending:
+                if event.button == 1 and dragging and not promotion_pending and not board.is_game_over():
                     x, y = event.pos
                     if x < BOARD_SIZE and y < BOARD_SIZE:
                         col = x // SQ_SIZE
@@ -544,15 +713,19 @@ def main():
                         elif move in board.legal_moves:
                             san = board.san(move)
                             board.push(move)
+                            guardar_experiencia_jugada(board, move, is_ia=False)
                             move_log.append(san)
                             last_move = move
+                            animate_move(screen, move, board, IMAGES)
                             if board.is_checkmate():
                                 guardar_experiencia("1-0")
                                 export_pgn(move_log, ia_color, player_color, "1-0")
+                                save_qtable(qtable)
                                 reset_game()
                             elif board.is_stalemate() or board.is_insufficient_material() or board.can_claim_fifty_moves() or board.is_seventyfive_moves() or board.is_fivefold_repetition():
                                 guardar_experiencia("1/2-1/2")
                                 export_pgn(move_log, ia_color, player_color, "1/2-1/2")
+                                save_qtable(qtable)
                                 reset_game()
                     dragging = False
                     drag_start = None
@@ -560,11 +733,9 @@ def main():
             elif event.type == pygame.MOUSEMOTION:
                 if dragging:
                     drag_pos = event.pos
-
         clock.tick(FPS)
-
     pygame.quit()
     sys.exit()
 
 if __name__ == "__main__":
-    main()
+    main_menu()
