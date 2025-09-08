@@ -1,0 +1,13 @@
+[Event "Ajedrez con IA"]
+[Site "Python Chess"]
+[Date "2025.09.08"]
+[Round "1"]
+[White "Jugador"]
+[Black "IA"]
+[Result "1-0"]
+
+1. e4 b5 2. Nc3 e6 3. Nxb5 Ke7 4. e5 Nc6 5. Nf3 Rb8 6. d4 Rxb5 7. Bxb5 Ke8 8.
+Bxc6 dxc6 9. Qd3 f6 10. exf6 g5 11. Nxg5 Bb4+ 12. c3 Bxc3+ 13. bxc3 c5 14. f7+
+Kd7 15. Qb5+ c6 16. Qa4 Qxg5 17. Qxa7+ Bb7 18. Bxg5 cxd4 19. Qxd4+ Kc8 20. Qd8#
+1-0
+
